@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import { wishlistSchema } from '@/lib/validations'
-import { sendConfirmation, sendTeamNotification } from '@/lib/email'
+import { sendConfirmation, sendCoursesAdded, sendTeamNotification } from '@/lib/email'
 
 // Best-effort rate limit. This is per-instance memory, so on serverless it caps
 // a single burst rather than a distributed flood — enough to stop casual abuse
@@ -56,11 +56,19 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: true, ref: 'THANKS' }, { status: 201 })
   }
 
+  // The form shouldn't produce repeats, but dedupe before anything touches the
+  // database so a crafted payload can't bloat the array.
+  const courses = Array.from(new Set(data.courses))
+
   let entry
+  let existed = false
+  let addedCourses: string[] = []
+
   try {
     entry = await prisma.wishlistEntry.create({
       data: {
         ...data,
+        courses,
         note: data.note ?? null,
         gdprConsent,
         ipAddress: ip,
@@ -69,38 +77,75 @@ export async function POST(req: NextRequest) {
     })
   } catch (err) {
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-      // Deliberately not an upsert: upserting on email would let anyone
-      // overwrite an existing person's details just by knowing their address.
+      // Already on the list. Merge in any courses they hadn't picked before —
+      // but deliberately leave name, phone, country and role alone, so knowing
+      // someone's email can't be used to overwrite their details.
+      existed = true
+
+      const current = await prisma.wishlistEntry.findUnique({ where: { email: data.email } })
+      if (!current) {
+        // Lost a race with a concurrent delete. Vanishingly rare.
+        console.error('wishlist conflict but no existing row', data.email)
+        return NextResponse.json(
+          { error: 'Could not save your details. Please try again.' },
+          { status: 500 },
+        )
+      }
+
+      addedCourses = courses.filter((c) => !current.courses.includes(c))
+
+      entry = addedCourses.length
+        ? await prisma.wishlistEntry.update({
+            where: { email: data.email },
+            data: { courses: [...current.courses, ...addedCourses] },
+          })
+        : current
+    } else {
+      console.error('wishlist create failed', err)
       return NextResponse.json(
-        { error: "You're already on the list — we'll be in touch soon!" },
-        { status: 409 },
+        { error: 'Could not save your details. Please try again.' },
+        { status: 500 },
       )
     }
-    console.error('wishlist create failed', err)
-    return NextResponse.json(
-      { error: 'Could not save your details. Please try again.' },
-      { status: 500 },
-    )
   }
 
   // Email must never fail the signup — the entry is already saved.
-  const [teamResult, confirmResult] = await Promise.allSettled([
-    sendTeamNotification({
-      id: entry.id,
-      fullName: entry.fullName,
-      email: entry.email,
-      phone: entry.phone,
-      country: entry.country,
-      role: entry.role,
-      courses: entry.courses,
-      note: entry.note ?? undefined,
-    }),
-    sendConfirmation({
-      fullName: entry.fullName,
-      email: entry.email,
-      courses: entry.courses,
-    }),
-  ])
+  //
+  // Three cases: a brand new signup gets the team alert + a confirmation; a
+  // returning person who picked something new gets told what was added; a
+  // returning person who picked nothing new gets no mail at all.
+  const sends: Promise<{ error?: unknown } | null>[] = []
+
+  if (!existed) {
+    sends.push(
+      sendTeamNotification({
+        id: entry.id,
+        fullName: entry.fullName,
+        email: entry.email,
+        phone: entry.phone,
+        country: entry.country,
+        role: entry.role,
+        courses: entry.courses,
+        note: entry.note ?? undefined,
+      }),
+      sendConfirmation({
+        fullName: entry.fullName,
+        email: entry.email,
+        courses: entry.courses,
+      }),
+    )
+  } else if (addedCourses.length) {
+    sends.push(
+      sendCoursesAdded({
+        fullName: entry.fullName,
+        email: entry.email,
+        added: addedCourses,
+        all: entry.courses,
+      }),
+    )
+  }
+
+  const settled = await Promise.allSettled(sends)
 
   // resend-node resolves with { data, error } rather than throwing on API
   // errors — an unverified sending domain lands here, not in `rejected` — so a
@@ -120,14 +165,22 @@ export async function POST(req: NextRequest) {
     return true
   }
 
-  delivered(teamResult, 'team')
+  // For a new signup the confirmation is the last send; for a returning one it
+  // is the only send. Either way it's the mail the success screen refers to.
+  const emailed =
+    settled.length > 0 &&
+    delivered(settled[settled.length - 1], existed ? 'courses-added' : 'confirmation')
 
-  // Reported to the client so the success screen only promises a confirmation
-  // email when one was really sent.
-  const emailed = delivered(confirmResult, 'confirmation')
+  if (!existed && settled.length > 1) delivered(settled[0], 'team')
 
   return NextResponse.json(
-    { success: true, ref: entry.id.slice(-8).toUpperCase(), emailed },
-    { status: 201 },
+    {
+      success: true,
+      ref: entry.id.slice(-8).toUpperCase(),
+      emailed,
+      existed,
+      addedCourses,
+    },
+    { status: existed ? 200 : 201 },
   )
 }

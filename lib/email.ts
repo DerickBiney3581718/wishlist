@@ -50,6 +50,41 @@ export async function sendTeamNotification(data: {
   })
 }
 
+/**
+ * Sent when someone already on the list submits the form again with courses
+ * they hadn't picked before. `added` is only the new ones; `all` is their full
+ * list after the merge.
+ */
+export async function sendCoursesAdded(data: {
+  fullName: string; email: string; added: string[]; all: string[]
+}) {
+  const addedList = data.added.map(c =>
+    `<div style="padding:8px 12px;background:#f0f9ff;border-left:3px solid #0082D4;margin:6px 0;font-size:13px;color:#042E4D;font-weight:600">
+      ${c.replace(/-/g,' ').replace(/\b\w/g,l=>l.toUpperCase())}
+    </div>`
+  ).join('')
+
+  const allList = data.all.map(c =>
+    `<li style="margin:3px 0;font-size:13px;color:#374151">${c.replace(/-/g,' ').replace(/\b\w/g,l=>l.toUpperCase())}</li>`
+  ).join('')
+
+  return resend().emails.send({
+    from: FROM, to: [data.email], replyTo: TEAM,
+    subject: `Added to your Tween Learning wishlist — ${data.added.length} more course${data.added.length === 1 ? '' : 's'}`,
+    html: wrap(`
+      <p style="font-size:15px;color:#374151;margin:0 0 12px">Hi <strong>${data.fullName.split(' ')[0]}</strong>,</p>
+      <p style="font-size:14px;color:#374151;line-height:1.7;margin:0 0 16px">You were already on the list, so we've added these to your existing spot:</p>
+      ${addedList}
+      <p style="font-size:12px;font-weight:700;color:#6b7280;margin:20px 0 6px">YOUR FULL WISHLIST</p>
+      <ul style="margin:0;padding-left:16px">${allList}</ul>
+      <p style="font-size:13px;color:#6b7280;margin:20px 0 0;line-height:1.6">
+        We'll reach out when enrollment opens. Questions? Reply here or email
+        <a href="mailto:${TEAM}" style="color:#0082D4">${TEAM}</a>.
+      </p>
+    `)
+  })
+}
+
 export async function sendConfirmation(data: { fullName: string; email: string; courses: string[] }) {
   const courseList = data.courses.map(c =>
     `<div style="padding:8px 12px;background:#f0f9ff;border-left:3px solid #0082D4;margin:6px 0;font-size:13px;color:#042E4D;font-weight:600">

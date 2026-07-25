@@ -10,6 +10,8 @@ export default function WishlistPage() {
   const [submitted, setSubmitted] = useState(false)
   const [ref, setRef] = useState('')
   const [emailed, setEmailed] = useState(false)
+  const [existed, setExisted] = useState(false)
+  const [addedCourses, setAddedCourses] = useState<string[]>([])
   const [serverError, setServerError] = useState('')
 
   const {
@@ -46,6 +48,8 @@ export default function WishlistPage() {
       if (res.ok) {
         setRef(json.ref ?? '')
         setEmailed(Boolean(json.emailed))
+        setExisted(Boolean(json.existed))
+        setAddedCourses(Array.isArray(json.addedCourses) ? json.addedCourses : [])
         setSubmitted(true)
       } else {
         setServerError(json.error ?? 'Something went wrong. Please try again.')
@@ -55,7 +59,15 @@ export default function WishlistPage() {
     }
   }
 
-  if (submitted) return <SuccessScreen ref_={ref} emailed={emailed} />
+  if (submitted)
+    return (
+      <SuccessScreen
+        ref_={ref}
+        emailed={emailed}
+        existed={existed}
+        addedCourses={addedCourses}
+      />
+    )
 
   return (
     <div className={styles.page}>
@@ -309,7 +321,29 @@ function Field({ label, hint, error, children }: { label: string; hint?: string;
   )
 }
 
-function SuccessScreen({ ref_, emailed }: { ref_: string; emailed: boolean }) {
+function SuccessScreen({
+  ref_,
+  emailed,
+  existed,
+  addedCourses,
+}: {
+  ref_: string
+  emailed: boolean
+  existed: boolean
+  addedCourses: string[]
+}) {
+  const addedLabels = addedCourses.map(
+    (id) => COURSES.find((c) => c.id === id)?.label ?? id.replace(/-/g, ' '),
+  )
+
+  const title = !existed
+    ? "You're on the list!"
+    : addedLabels.length
+      ? 'Courses added!'
+      : "You're already on the list"
+
+  const icon = !existed ? '🎉' : addedLabels.length ? '✅' : '👋'
+
   return (
     <div className={styles.page}>
       <Bg />
@@ -318,10 +352,19 @@ function SuccessScreen({ ref_, emailed }: { ref_: string; emailed: boolean }) {
           <span className={styles.logo}>twn.<span className={styles.logoSub}>LEARNING</span></span>
         </nav>
         <main className={styles.successMain}>
-          <div className={styles.successIcon} aria-hidden="true">🎉</div>
-          <h1 className={styles.successTitle}>You&apos;re on the list!</h1>
+          <div className={styles.successIcon} aria-hidden="true">{icon}</div>
+          <h1 className={styles.successTitle}>{title}</h1>
           <p className={styles.successDesc}>
-            We&apos;ll personally reach out when enrollment opens for your chosen courses.{' '}
+            {!existed ? (
+              <>We&apos;ll personally reach out when enrollment opens for your chosen courses. </>
+            ) : addedLabels.length ? (
+              <>
+                You were already on the list, so we added{' '}
+                <strong>{addedLabels.join(', ')}</strong> to your existing spot.{' '}
+              </>
+            ) : (
+              <>Everything you picked was already on your list — nothing to change. </>
+            )}
             {emailed
               ? 'Check your email for confirmation.'
               : 'Keep the reference below — that’s your spot.'}
